@@ -2,9 +2,11 @@ const express = require('express')
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config()
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express()
 const port = process.env.PORT || 5000;
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
 
 app.use(cors());
 app.use(express.json());
@@ -39,6 +41,7 @@ async function run() {
         const bookingCollection = client.db('doctorsPortal').collection('booking');
         const userCollection = client.db('doctorsPortal').collection('users');
         const doctorCollection = client.db('doctorsPortal').collection('doctors');
+        const paymentCollection = client.db('doctorsPortal').collection('payments');
 
         const verifyAdmin = async (req, res, next) => {
             const requester = req.decoded.email;
@@ -50,7 +53,19 @@ async function run() {
                 res.status(403).send({ message: 'forbidden' });
             }
 
-        }
+        };
+
+        app.post('/create-payment-intent', async (req, res) => {
+            const service = req.body;
+            const price = service.price;
+            const amount = price * 100;
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: 'usd',
+                payment_method_types: ['card']
+            });
+            res.send({ clientSecret: paymentIntent.client_secret, })
+        });
 
         app.get('/service', async (req, res) => {
             const query = {};
@@ -69,7 +84,7 @@ async function run() {
             const user = await userCollection.findOne({ email: email });
             const isAdmin = user.role === 'admin';
             res.send({ admin: isAdmin });
-        })
+        });
 
         app.get('/available', async (req, res) => {
             const date = req.query.date;
@@ -106,6 +121,13 @@ async function run() {
             }
         });
 
+        app.get('/booking/:id', verifyJWT, async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: ObjectId(id) };
+            const result = await bookingCollection.findOne(query);
+            res.send(result);
+        });
+
         app.post('/booking', async (req, res) => {
             const booking = req.body;
             const query = { treatment: booking.treatment, date: booking.date, patient: booking.patient }
@@ -117,10 +139,27 @@ async function run() {
             return res.send({ success: true, result });
         });
 
+
+        app.patch('/booking/:id', verifyJWT, async (req, res) => {
+            const id = req.params.id;
+            const payment = req.body;
+            const filter = { _id: ObjectId(id) };
+            const updateDoc = {
+                $set: {
+                    paid: true,
+                    transactionId: payment.transactionId,
+                }
+            };
+            const result= await paymentCollection.insertOne(payment);
+            const updatedBooking= await bookingCollection.updateOne(filter, updateDoc);
+            res.send(updateDoc);
+
+        });
+
         app.get('/doctor', verifyJWT, verifyAdmin, async (req, res) => {
             const doctor = await doctorCollection.find().toArray();
             res.send(doctor);
-        })
+        });
 
         app.post('/doctor', verifyJWT, verifyAdmin, async (req, res) => {
             const doctor = req.body;
@@ -135,12 +174,12 @@ async function run() {
             res.send(result);
         });
 
-        app.delete('/user/:email', verifyJWT, verifyAdmin, async(req, res)=>{
-            const email= req.params.email;
-            const query={email: email};
-            const result= await userCollection.deleteOne(query);
+        app.delete('/user/:email', verifyJWT, verifyAdmin, async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email };
+            const result = await userCollection.deleteOne(query);
             res.send(result);
-        })
+        });
 
         app.put('/user/admin/:email', verifyJWT, verifyAdmin, async (req, res) => {
             const email = req.params.email;
@@ -163,7 +202,7 @@ async function run() {
             const result = await userCollection.updateOne(filter, updateDoc, options);
             const token = jwt.sign({ email: email }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
             res.send({ result, token });
-        })
+        });
 
     }
 
